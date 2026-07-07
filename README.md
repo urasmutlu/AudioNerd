@@ -95,8 +95,12 @@ AudioNerd/
 - Only playlists **you own** are shown (ones you merely follow are excluded,
   since you can't reorder those).
 - Podcast episodes and local files are skipped — they have no tempo to look up.
-- Some remixes/bootlegs aren't in GetSongBPM's catalog; those rows show a blank
-  BPM and sort to the bottom.
+- **GetSongBPM catalog coverage is uneven.** It's strong on mainstream/older
+  tracks but weak on newer indie and underground/remixed electronic. The client
+  strips remix/version suffixes (`- Extended Mix`, `- X Remix`) and falls back to
+  an artist-filtered search to recover as many as possible, but tracks genuinely
+  absent from their database show a blank BPM and sort to the bottom.
+  Run with `--debug` to see exactly which tracks miss.
 
 ## Attribution
 

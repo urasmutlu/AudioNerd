@@ -60,29 +60,45 @@ class GetSongBPMClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _search(self, lookup: str, search_type: str) -> list[dict[str, Any]]:
+        try:
+            data = self._get("/search/", {"type": search_type, "lookup": lookup})
+        except requests.HTTPError:
+            return []
+        results = data.get("search")
+        # GetSongBPM returns {"error": "no result"} (a dict) when nothing matched.
+        return results if isinstance(results, list) else []
+
     def lookup(self, title: str, artist: str) -> Optional[dict[str, Any]]:
         """Return a normalised feature dict for a track, or None if not found.
 
-        Keys: bpm, music_key, open_key, time_sig, danceability, acousticness,
-        getsongbpm_id.
+        GetSongBPM's search is picky: remix/version suffixes ("- Extended Mix")
+        make it return nothing, and it caps at 30 results with no paging. So we
+        try, in order:
+          1. combined "song:<clean title> artist:<artist>"  (API filters artist)
+          2. combined with the raw title (in case cleaning was wrong)
+          3. song-only on the clean title, then filter to the artist ourselves
+        Keys returned: bpm, music_key, open_key, time_sig, danceability,
+        acousticness, getsongbpm_id.
         """
-        lookup = f"song:{title} artist:{artist}"
-        try:
-            data = self._get("/search/", {"type": "both", "lookup": lookup})
-        except requests.HTTPError:
-            return None
+        clean = _clean_title(title)
+        titles = [clean] if clean.lower() == title.lower() else [clean, title]
 
-        results = data.get("search")
-        # GetSongBPM returns a dict like {"error": "no result"} when nothing matched.
-        if not isinstance(results, list) or not results:
-            if self._debug:
-                logger.info("miss (no catalog match) for %r by %r", title, artist)
-            return None
+        match = None
+        for t in titles:  # strategies 1 & 2: combined, API does the artist filter
+            results = self._search(f"song:{t} artist:{artist}", "both")
+            if results:
+                match = self._best_match(results, t, artist)
+                if match:
+                    break
 
-        match = self._best_match(results, title, artist)
+        if match is None:  # strategy 3: song-only, we filter by artist strictly
+            results = self._search(clean, "song")
+            match = self._match_by_artist(results, artist)
+
         if match is None:
             if self._debug:
-                logger.info("miss (no confident match) for %r by %r", title, artist)
+                logger.info("miss (not in GetSongBPM catalog) for %r by %r", title, artist)
             return None
 
         if self._debug:
@@ -130,6 +146,44 @@ class GetSongBPMClient:
             if _norm(r.get("title", "")) == want_title:
                 return r
         return results[0]
+
+    @staticmethod
+    def _match_by_artist(
+        results: list[dict[str, Any]], artist: str
+    ) -> Optional[dict[str, Any]]:
+        """Like _best_match but REQUIRES an artist match (no first-result fallback).
+
+        Used for the song-only fallback, where results aren't pre-filtered by
+        the API — taking the first result would grab a same-titled song by a
+        completely different artist.
+        """
+        want_artist = _norm(artist)
+        for r in results:
+            r_artist = _norm((r.get("artist") or {}).get("name", ""))
+            if r_artist and (r_artist in want_artist or want_artist in r_artist):
+                return r
+        return None
+
+
+# Suffixes Spotify appends after " - " that GetSongBPM's search can't handle.
+_VERSION_SUFFIX = re.compile(
+    r"\s*-\s*.*?\b(remix|mix|edit|version|rework|rmx|dub|bootleg|mixed|remaster|"
+    r"remastered|live|acoustic|instrumental|extended|radio)\b.*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_title(title: str) -> str:
+    """Strip remix/version suffixes and feat. tags that break GetSongBPM search.
+
+    "Come Together - Extended Mix"     -> "Come Together"
+    "Lightenup - Alex Metric Remix"    -> "Lightenup"
+    "Song (feat. Someone)"             -> "Song"
+    Leaves ordinary hyphenated titles ("Sky and Sand") untouched.
+    """
+    t = _VERSION_SUFFIX.sub("", title)
+    t = re.sub(r"\(.*?feat.*?\)|\[.*?\]", "", t, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", t).strip() or title
 
 
 def _to_float(value: Any) -> Optional[float]:
