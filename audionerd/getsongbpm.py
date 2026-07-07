@@ -11,10 +11,11 @@ limited, so we never want to look up the same track twice.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Optional
 
 import requests
+
+from .textmatch import artist_matches, clean_title as _clean_title, norm as _norm
 
 logger = logging.getLogger("audionerd.getsongbpm")
 
@@ -23,14 +24,6 @@ logger = logging.getLogger("audionerd.getsongbpm")
 # client. The original api.getsong.co host serves the same JSON API without the
 # challenge, so we use it directly.
 API_BASE = "https://api.getsong.co"
-
-
-def _norm(s: str) -> str:
-    """Loose normalisation for comparing titles/artists across the two APIs."""
-    s = s.lower()
-    s = re.sub(r"\(.*?\)|\[.*?\]", " ", s)          # drop "(feat. …)", "[remix]"
-    s = re.sub(r"[^a-z0-9]+", " ", s)               # keep alnum only
-    return re.sub(r"\s+", " ", s).strip()
 
 
 class GetSongBPMClient:
@@ -136,12 +129,11 @@ class GetSongBPMClient:
     def _best_match(
         results: list[dict[str, Any]], title: str, artist: str
     ) -> Optional[dict[str, Any]]:
-        want_title, want_artist = _norm(title), _norm(artist)
         # Prefer a result whose artist matches; fall back to first result.
         for r in results:
-            r_artist = _norm((r.get("artist") or {}).get("name", ""))
-            if r_artist and (r_artist in want_artist or want_artist in r_artist):
+            if artist_matches((r.get("artist") or {}).get("name", ""), artist):
                 return r
+        want_title = _norm(title)
         for r in results:
             if _norm(r.get("title", "")) == want_title:
                 return r
@@ -157,33 +149,10 @@ class GetSongBPMClient:
         the API — taking the first result would grab a same-titled song by a
         completely different artist.
         """
-        want_artist = _norm(artist)
         for r in results:
-            r_artist = _norm((r.get("artist") or {}).get("name", ""))
-            if r_artist and (r_artist in want_artist or want_artist in r_artist):
+            if artist_matches((r.get("artist") or {}).get("name", ""), artist):
                 return r
         return None
-
-
-# Suffixes Spotify appends after " - " that GetSongBPM's search can't handle.
-_VERSION_SUFFIX = re.compile(
-    r"\s*-\s*.*?\b(remix|mix|edit|version|rework|rmx|dub|bootleg|mixed|remaster|"
-    r"remastered|live|acoustic|instrumental|extended|radio)\b.*$",
-    re.IGNORECASE,
-)
-
-
-def _clean_title(title: str) -> str:
-    """Strip remix/version suffixes and feat. tags that break GetSongBPM search.
-
-    "Come Together - Extended Mix"     -> "Come Together"
-    "Lightenup - Alex Metric Remix"    -> "Lightenup"
-    "Song (feat. Someone)"             -> "Song"
-    Leaves ordinary hyphenated titles ("Sky and Sand") untouched.
-    """
-    t = _VERSION_SUFFIX.sub("", title)
-    t = re.sub(r"\(.*?feat.*?\)|\[.*?\]", "", t, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", t).strip() or title
 
 
 def _to_float(value: Any) -> Optional[float]:

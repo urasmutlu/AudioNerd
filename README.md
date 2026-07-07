@@ -7,8 +7,19 @@ playlists, and generate **new, sorted playlists** — without touching the
 originals.
 
 Because Spotify [deprecated its own audio-features / tempo endpoints in 2024](https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api),
-AudioNerd sources tempo/key data from [GetSongBPM](https://getsongbpm.com) and
-caches it locally in SQLite so repeat loads are instant and API-friendly.
+AudioNerd sources tempo/key data from a **layered set of fallbacks** and caches
+every result locally in SQLite so repeat loads are instant and API-friendly:
+
+1. **GetSongBPM** — BPM + musical key + danceability (fast metadata lookup)
+2. **Deezer** — free BPM metadata for tracks GetSongBPM lacks
+3. **Preview analysis** — when no metadata source has it, AudioNerd downloads
+   Deezer's 30-second preview and estimates BPM (and key) locally with
+   [`librosa`](https://librosa.org). This gives near-complete coverage
+   regardless of genre, at the cost of a slower first load per track.
+
+Each row is tagged with the source it came from. Deezer's public API is
+rate-limited (50 req / 5 s); AudioNerd stays safely under that with a
+sliding-window limiter.
 
 ## Features
 
@@ -72,9 +83,18 @@ uv run streamlit run app.py -- --debug
 
 Or set the environment variable instead: `AUDIONERD_DEBUG=1`.
 
-In debug mode, any **non-OK** response from Spotify or GetSongBPM is logged to
-the terminal with its status code and body (API keys are redacted). The sidebar
-also shows a "Debug mode ON" banner.
+In debug mode, any **non-OK** response from Spotify, GetSongBPM, or Deezer is
+logged to the terminal with its status code and body (API keys are redacted),
+along with per-track source hits/misses. The sidebar also shows a banner.
+
+### Metadata-only mode
+
+To skip the preview-analysis fallback (faster, but lower coverage), add
+`--no-analyze` (or set `AUDIONERD_NO_ANALYZE=1`):
+
+```bash
+uv run streamlit run app.py -- --no-analyze
+```
 
 ## Project layout
 
@@ -83,9 +103,12 @@ AudioNerd/
 ├── app.py                 # Streamlit dashboard (Stats + Playlists views)
 ├── audionerd/
 │   ├── spotify.py         # OAuth + Spotify Web API (Feb-2026 endpoints)
-│   ├── getsongbpm.py      # GetSongBPM lookup client
+│   ├── getsongbpm.py      # GetSongBPM lookup client (source 1)
+│   ├── deezer.py          # Deezer client + rate limiter (source 2 + previews)
+│   ├── analyze.py         # librosa BPM/key from a preview clip (source 3)
+│   ├── textmatch.py       # shared title/artist matching helpers
 │   ├── cache.py           # SQLite cache (track features + API responses)
-│   └── enrich.py          # merges playlist tracks with cached features
+│   └── enrich.py          # layers the sources; merges features onto tracks
 ├── pyproject.toml         # uv project + dependencies
 └── .env.example           # credential template (copy to .env)
 ```
@@ -95,12 +118,12 @@ AudioNerd/
 - Only playlists **you own** are shown (ones you merely follow are excluded,
   since you can't reorder those).
 - Podcast episodes and local files are skipped — they have no tempo to look up.
-- **GetSongBPM catalog coverage is uneven.** It's strong on mainstream/older
-  tracks but weak on newer indie and underground/remixed electronic. The client
-  strips remix/version suffixes (`- Extended Mix`, `- X Remix`) and falls back to
-  an artist-filtered search to recover as many as possible, but tracks genuinely
-  absent from their database show a blank BPM and sort to the bottom.
-  Run with `--debug` to see exactly which tracks miss.
+- **Coverage** is near-complete thanks to the three-source fallback. Tracks
+  resolved via `analyzed` are estimates from a 30s clip — BPM is reliable for
+  steady-beat tracks (±1-2 BPM) but can be octave-off or wrong on ambient
+  material, and the key is approximate. Metadata sources (`getsongbpm`,
+  `deezer`) are exact and always tried first. Run with `--debug` to see the
+  per-track source, or check the **Source** column in the table.
 
 ## Attribution
 

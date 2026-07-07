@@ -15,18 +15,20 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from audionerd import cache, enrich
+from audionerd.deezer import DeezerClient
 from audionerd.getsongbpm import GetSongBPMClient
 from audionerd.spotify import TIME_RANGES, SpotifyClient
 
 load_dotenv()
 
 
-def _debug_enabled() -> bool:
-    """Debug mode via `streamlit run app.py -- --debug` or AUDIONERD_DEBUG=1."""
+def _parse_flags() -> argparse.Namespace:
+    """Flags via `streamlit run app.py -- --debug --no-analyze` (note the `--`)."""
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--no-analyze", action="store_true")
     args, _ = parser.parse_known_args()
-    return args.debug or os.getenv("AUDIONERD_DEBUG") == "1"
+    return args
 
 
 def _configure_debug_logging() -> None:
@@ -51,7 +53,10 @@ def _configure_debug_logging() -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-DEBUG = _debug_enabled()
+_FLAGS = _parse_flags()
+DEBUG = _FLAGS.debug or os.getenv("AUDIONERD_DEBUG") == "1"
+# Preview-analysis fallback (source 3) is on unless disabled.
+ANALYZE = not (_FLAGS.no_analyze or os.getenv("AUDIONERD_NO_ANALYZE") == "1")
 if DEBUG:
     _configure_debug_logging()
 
@@ -72,7 +77,7 @@ SORT_OPTIONS = {
 
 
 @st.cache_resource
-def get_clients() -> tuple[SpotifyClient, GetSongBPMClient]:
+def get_clients() -> tuple[SpotifyClient, GetSongBPMClient, DeezerClient]:
     required = ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_REDIRECT_URI", "GETSONGBPM_API_KEY"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
@@ -91,7 +96,8 @@ def get_clients() -> tuple[SpotifyClient, GetSongBPMClient]:
         debug=DEBUG,
     )
     gsb = GetSongBPMClient(os.environ["GETSONGBPM_API_KEY"], debug=DEBUG)
-    return spotify, gsb
+    deezer = DeezerClient(debug=DEBUG)
+    return spotify, gsb, deezer
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -148,7 +154,9 @@ def render_stats(spotify: SpotifyClient) -> None:
         )
 
 
-def render_playlists(spotify: SpotifyClient, gsb: GetSongBPMClient) -> None:
+def render_playlists(
+    spotify: SpotifyClient, gsb: GetSongBPMClient, deezer: DeezerClient
+) -> None:
     st.subheader("Playlists")
     playlists = load_my_playlists(spotify)
     if not playlists:
@@ -165,9 +173,14 @@ def render_playlists(spotify: SpotifyClient, gsb: GetSongBPMClient) -> None:
     if pid not in store:
         with st.status("Fetching tracks and audio features…", expanded=True) as status:
             tracks = spotify.playlist_tracks(pid)
-            bar = st.progress(0, text="Looking up tempos…")
+            label = "Looking up tempos" + ("" if ANALYZE else " (metadata only)") + "…"
+            bar = st.progress(0, text=label)
             rows = enrich.enrich_tracks(
-                tracks, gsb, progress=lambda done, total: bar.progress(done / total, text=f"{done}/{total} tracks")
+                tracks,
+                gsb,
+                deezer,
+                analyze=ANALYZE,
+                progress=lambda done, total: bar.progress(done / total, text=f"{done}/{total} tracks"),
             )
             status.update(label=f"Loaded {len(rows)} tracks", state="complete")
         store[pid] = rows
@@ -178,17 +191,23 @@ def render_playlists(spotify: SpotifyClient, gsb: GetSongBPMClient) -> None:
         return
 
     df = pd.DataFrame(rows)
-    matched = df["bpm"].notna().sum()
-    st.caption(f"Tempo/key found for {matched} of {len(df)} tracks via GetSongBPM.")
+    matched = int(df["bpm"].notna().sum())
+    by_source = df[df["bpm"].notna()]["source"].value_counts().to_dict()
+    breakdown = ", ".join(f"{v} {k}" for k, v in by_source.items()) or "none"
+    st.caption(f"Tempo found for **{matched} of {len(df)}** tracks  ·  by source: {breakdown}")
 
     sort_label = st.selectbox("Sort by", list(SORT_OPTIONS.keys()))
     column, ascending = SORT_OPTIONS[sort_label]
     df_sorted = df.sort_values(by=column, ascending=ascending, na_position="last").reset_index(drop=True)
 
-    display = df_sorted[["title", "artist", "bpm", "music_key", "time_sig", "danceability"]].copy()
-    display.columns = ["Title", "Artist", "BPM", "Key", "Time sig", "Danceability"]
+    display = df_sorted[["title", "artist", "bpm", "music_key", "time_sig", "danceability", "source"]].copy()
+    display.columns = ["Title", "Artist", "BPM", "Key", "Time sig", "Danceability", "Source"]
     display.insert(0, "#", range(1, len(display) + 1))
     st.dataframe(display, hide_index=True, use_container_width=True)
+    st.caption(
+        "Source: `getsongbpm` = BPM+key metadata · `deezer` = Deezer BPM metadata · "
+        "`analyzed` = estimated from the 30s preview (BPM/key are approximate)."
+    )
 
     # Create a NEW sorted playlist (never modifies the original).
     st.divider()
@@ -215,7 +234,9 @@ def main() -> None:
     st.title("🎧 AudioNerd")
     if DEBUG:
         st.sidebar.warning("🐞 Debug mode ON — non-OK API responses are logged to the terminal.")
-    spotify, gsb = get_clients()
+    if not ANALYZE:
+        st.sidebar.info("⚡ Analysis off — metadata sources only (faster, less coverage).")
+    spotify, gsb, deezer = get_clients()
 
     try:
         user = spotify.me()
@@ -228,7 +249,7 @@ def main() -> None:
     with stats_tab:
         render_stats(spotify)
     with playlists_tab:
-        render_playlists(spotify, gsb)
+        render_playlists(spotify, gsb, deezer)
 
 
 if __name__ == "__main__":
