@@ -73,6 +73,42 @@ SORT_OPTIONS = {
 }
 
 
+# Restyle the top-level `view` radio to look like tabs: horizontal row with an
+# underline under the active item and no radio dots. Scoped to `.st-key-view`
+# (the container class Streamlit adds for a widget with key="view") so the
+# Time-frame radio inside the Stats view keeps its normal look.
+_TAB_NAV_CSS = """
+<style>
+.st-key-view div[role="radiogroup"] {
+    flex-direction: row;
+    gap: 1.5rem;
+    border-bottom: 1px solid rgba(250, 250, 250, 0.15);
+    margin-bottom: 0.5rem;
+}
+.st-key-view div[role="radiogroup"] > label {
+    margin: 0;
+    padding: 0.35rem 0.15rem;
+    border-bottom: 2px solid transparent;
+    opacity: 0.6;
+}
+/* Each option renders as
+   label[data-testid=stRadioOption] > input + div > div > [circle, text].
+   Hide just the circle (that inner div's first child); the text sibling stays. */
+.st-key-view [data-testid="stRadioOption"] > div > div > :first-child {
+    display: none !important;
+}
+.st-key-view div[role="radiogroup"] > label p {
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+.st-key-view div[role="radiogroup"] > label:has(input:checked) {
+    border-bottom-color: #ff4b4b;
+    opacity: 1;
+}
+</style>
+"""
+
+
 # Streamlit dataframe geometry: ~35px per row + ~38px header. Sizing a table to
 # `max_rows` means those rows are visible without an inner scrollbar; anything
 # beyond scrolls inside the table.
@@ -341,10 +377,21 @@ def main() -> None:
         st.stop()
 
     st.caption(f"Signed in as **{user.get('display_name') or user.get('id')}**")
-    stats_tab, playlists_tab = st.tabs(["📊 Stats", "🎚️ Playlists"])
-    with stats_tab:
+
+    # Top-level nav. We use a radio (rendering only the chosen view) rather than
+    # st.tabs, which renders *both* panels every run and only CSS-hides the
+    # inactive one — that hidden state is dropped on a widget-triggered rerun, so
+    # interacting with a dropdown flashes both views at once. The CSS below
+    # restyles this radio to look like tabs (no dots, underline on the active
+    # one); scoped to `.st-key-view` so the other radios are untouched.
+    st.markdown(_TAB_NAV_CSS, unsafe_allow_html=True)
+    view = st.radio(
+        "View", ["📊 Stats", "🎚️ Playlists"], horizontal=True,
+        key="view", label_visibility="collapsed",
+    )
+    if view == "📊 Stats":
         render_stats(spotify, gsb, deezer)
-    with playlists_tab:
+    else:
         render_playlists(spotify, gsb, deezer)
 
 
