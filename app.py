@@ -29,15 +29,31 @@ def _debug_enabled() -> bool:
     return args.debug or os.getenv("AUDIONERD_DEBUG") == "1"
 
 
+def _configure_debug_logging() -> None:
+    """Attach our own handler to the `audionerd` logger.
+
+    Streamlit configures the root logger before running this script, which makes
+    `logging.basicConfig()` a silent no-op. So we attach a StreamHandler directly
+    to our logger (writing to stderr, which shows up in the terminal) and stop it
+    propagating to Streamlit's handlers. Guarded so Streamlit's per-interaction
+    reruns don't stack duplicate handlers.
+    """
+    log = logging.getLogger("audionerd")
+    log.setLevel(logging.DEBUG)
+    log.propagate = False
+    if not getattr(log, "_audionerd_handler_added", False):
+        handler = logging.StreamHandler()  # -> sys.stderr -> your terminal
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s  %(name)s  %(levelname)s  %(message)s")
+        )
+        log.addHandler(handler)
+        log._audionerd_handler_added = True  # type: ignore[attr-defined]
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
 DEBUG = _debug_enabled()
 if DEBUG:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s  %(name)s  %(levelname)s  %(message)s",
-    )
-    logging.getLogger("audionerd").setLevel(logging.DEBUG)
-    # Keep the noise down — we only want our own API error logging, not urllib3's.
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    _configure_debug_logging()
 
 st.set_page_config(page_title="AudioNerd", page_icon="🎧", layout="wide")
 

@@ -75,11 +75,18 @@ class GetSongBPMClient:
         results = data.get("search")
         # GetSongBPM returns a dict like {"error": "no result"} when nothing matched.
         if not isinstance(results, list) or not results:
+            if self._debug:
+                logger.info("miss (no catalog match) for %r by %r", title, artist)
             return None
 
         match = self._best_match(results, title, artist)
         if match is None:
+            if self._debug:
+                logger.info("miss (no confident match) for %r by %r", title, artist)
             return None
+
+        if self._debug:
+            logger.debug("hit %r by %r -> id=%s", title, artist, match.get("id"))
 
         features = {
             "bpm": _to_float(match.get("tempo")),
