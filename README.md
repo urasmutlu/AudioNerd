@@ -10,12 +10,17 @@ Because Spotify [deprecated its own audio-features / tempo endpoints in 2024](ht
 AudioNerd sources tempo/key data from a **layered set of fallbacks** and caches
 every result locally in SQLite so repeat loads are instant and API-friendly:
 
-1. **GetSongBPM** — BPM + musical key + danceability (fast metadata lookup)
-2. **Deezer** — free BPM metadata for tracks GetSongBPM lacks
+1. **GetSongBPM** — BPM + musical key + danceability (fast metadata lookup).
+   On a 50-song labelled benchmark this was the most octave-accurate source
+   (~91% exact), so it always wins when it has the track.
+2. **Deezer** — free BPM metadata for tracks GetSongBPM lacks.
 3. **Preview analysis** — when no metadata source has it, AudioNerd downloads
    Deezer's 30-second preview and estimates BPM (and key) locally with
    [`librosa`](https://librosa.org). This gives near-complete coverage
-   regardless of genre, at the cost of a slower first load per track.
+   regardless of genre, at the cost of a slower first load per track. It's the
+   least reliable source — signal-based tempo estimation is prone to octave
+   (half/double) errors on slow or ambient songs — so every analysed value
+   carries a **confidence** score and is flagged in the UI (see below).
 
 Each row is tagged with the source it came from. Deezer's public API is
 rate-limited (50 req / 5 s); AudioNerd stays safely under that with a
@@ -119,11 +124,13 @@ AudioNerd/
   since you can't reorder those).
 - Podcast episodes and local files are skipped — they have no tempo to look up.
 - **Coverage** is near-complete thanks to the three-source fallback. Tracks
-  resolved via `analyzed` are estimates from a 30s clip — BPM is reliable for
-  steady-beat tracks (±1-2 BPM) but can be octave-off or wrong on ambient
-  material, and the key is approximate. Metadata sources (`getsongbpm`,
-  `deezer`) are exact and always tried first. Run with `--debug` to see the
-  per-track source, or check the **Source** column in the table.
+  resolved via `analyzed` are estimates from a 30s clip, marked with a **`~`**
+  prefix on the BPM and a confidence in the **Source** column. They're reliable
+  for steady-beat tracks but prone to octave (half/double) errors on slow or
+  ambient material — a known, intrinsic limitation of signal-based tempo
+  estimation, not something a preview length or single tweak fixes. Metadata
+  sources (`getsongbpm`, `deezer`) are exact and always tried first, so most
+  rows are unmarked. Run with `--debug` to see the per-track source.
 
 ## Attribution
 

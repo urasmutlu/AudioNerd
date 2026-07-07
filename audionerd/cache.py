@@ -47,6 +47,7 @@ def init_db() -> None:
                 acousticness  REAL,
                 getsongbpm_id TEXT,
                 source        TEXT,
+                confidence    TEXT,
                 not_found     INTEGER NOT NULL DEFAULT 0,
                 fetched_at    TEXT NOT NULL
             );
@@ -58,10 +59,12 @@ def init_db() -> None:
             );
             """
         )
-        # Migration: add `source` to pre-existing databases that lack it.
+        # Migrations: add columns to pre-existing databases that lack them.
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(track_features)")}
         if "source" not in cols:
             conn.execute("ALTER TABLE track_features ADD COLUMN source TEXT")
+        if "confidence" not in cols:
+            conn.execute("ALTER TABLE track_features ADD COLUMN confidence TEXT")
 
 
 # --- track_features -------------------------------------------------------
@@ -93,6 +96,7 @@ def upsert_track_features(
     acousticness: Optional[float] = None,
     getsongbpm_id: Optional[str] = None,
     source: Optional[str] = None,
+    confidence: Optional[str] = None,
     not_found: bool = False,
 ) -> None:
     with get_connection() as conn:
@@ -100,8 +104,9 @@ def upsert_track_features(
             """
             INSERT INTO track_features (
                 spotify_id, title, artist, bpm, music_key, open_key, time_sig,
-                danceability, acousticness, getsongbpm_id, source, not_found, fetched_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                danceability, acousticness, getsongbpm_id, source, confidence,
+                not_found, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(spotify_id) DO UPDATE SET
                 title=excluded.title,
                 artist=excluded.artist,
@@ -113,6 +118,7 @@ def upsert_track_features(
                 acousticness=excluded.acousticness,
                 getsongbpm_id=excluded.getsongbpm_id,
                 source=excluded.source,
+                confidence=excluded.confidence,
                 not_found=excluded.not_found,
                 fetched_at=excluded.fetched_at
             """,
@@ -128,6 +134,7 @@ def upsert_track_features(
                 acousticness,
                 getsongbpm_id,
                 source,
+                confidence,
                 1 if not_found else 0,
                 _now(),
             ),

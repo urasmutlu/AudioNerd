@@ -32,7 +32,7 @@ SCOPES = "user-top-read playlist-read-private playlist-modify-private playlist-m
 TIME_RANGES = {
     "short_term": "Last 4 weeks",
     "medium_term": "Last 6 months",
-    "long_term": "All time",
+    "long_term": "Last 1 year",
 }
 
 

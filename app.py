@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from audionerd import cache, enrich
+from audionerd import cache, camelot, enrich
 from audionerd.deezer import DeezerClient
 from audionerd.getsongbpm import GetSongBPMClient
 from audionerd.spotify import TIME_RANGES, SpotifyClient
@@ -73,6 +73,38 @@ SORT_OPTIONS = {
 }
 
 
+# Streamlit dataframe geometry: ~35px per row + ~38px header. Sizing a table to
+# `max_rows` means those rows are visible without an inner scrollbar; anything
+# beyond scrolls inside the table.
+_ROW_PX = 35
+_HEADER_PX = 38
+
+
+def _table_height(n_rows: int, max_rows: int = 25) -> int:
+    return _HEADER_PX + min(n_rows, max_rows) * _ROW_PX
+
+
+def _normalize_track(t: dict) -> dict:
+    """Shape a raw Spotify track object into what `enrich.enrich_tracks` expects."""
+    artists = t.get("artists", []) or []
+    return {
+        "spotify_id": t.get("id"),
+        "title": t.get("name"),
+        "artist": ", ".join(a["name"] for a in artists),
+        "primary_artist": artists[0]["name"] if artists else "",
+        "uri": t.get("uri"),
+    }
+
+
+def _show_wheel(counts: dict[str, int], title: str | None = None) -> None:
+    """Render a Camelot wheel and release the figure (avoids a memory leak)."""
+    import matplotlib.pyplot as plt
+
+    fig = camelot.wheel_figure(counts, title=title)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
+
+
 # --- resources (built once per session) ----------------------------------
 
 
@@ -113,18 +145,34 @@ def load_my_playlists(_spotify: SpotifyClient) -> list[dict]:
 # --- views ----------------------------------------------------------------
 
 
-def render_stats(spotify: SpotifyClient) -> None:
+def _top_track_keys(
+    gsb: GetSongBPMClient, deezer: DeezerClient, tracks: list[dict], time_range: str
+) -> list[str]:
+    """Enrich the top tracks (once per session per time frame) and return their keys."""
+    store = st.session_state.setdefault("top_enriched", {})
+    if time_range not in store:
+        normalized = [_normalize_track(t) for t in tracks]
+        with st.spinner("Analyzing keys for your top tracks…"):
+            rows = enrich.enrich_tracks(normalized, gsb, deezer, analyze=ANALYZE)
+        store[time_range] = [r["music_key"] for r in rows if r.get("music_key")]
+    return store[time_range]
+
+
+def render_stats(
+    spotify: SpotifyClient, gsb: GetSongBPMClient, deezer: DeezerClient
+) -> None:
     st.subheader("Your top stats")
     label = st.radio(
         "Time frame", list(TIME_RANGES.values()), horizontal=True, key="stats_range"
     )
     time_range = next(k for k, v in TIME_RANGES.items() if v == label)
 
+    tracks = load_top(spotify, "tracks", time_range)
+    artists = load_top(spotify, "artists", time_range)
     col_tracks, col_artists = st.columns(2)
 
     with col_tracks:
         st.markdown("#### 🎵 Top tracks")
-        tracks = load_top(spotify, "tracks", time_range)
         st.dataframe(
             pd.DataFrame(
                 {
@@ -136,11 +184,11 @@ def render_stats(spotify: SpotifyClient) -> None:
             ),
             hide_index=True,
             use_container_width=True,
+            height=_table_height(len(tracks)),  # all 25 visible; page scrolls past
         )
 
     with col_artists:
         st.markdown("#### 🎤 Top artists")
-        artists = load_top(spotify, "artists", time_range)
         st.dataframe(
             pd.DataFrame(
                 {
@@ -151,7 +199,17 @@ def render_stats(spotify: SpotifyClient) -> None:
             ),
             hide_index=True,
             use_container_width=True,
+            height=_table_height(len(artists), max_rows=12),  # shorter; leaves room below
         )
+        # Camelot wheel for the top tracks, filling the space under the artists list.
+        st.markdown("#### 🎡 Key wheel · top tracks")
+        keys = _top_track_keys(gsb, deezer, tracks, time_range)
+        counts = camelot.camelot_counts(keys)
+        if any(counts.values()):
+            _show_wheel(counts)
+            st.caption(f"Harmonic map of {len(keys)} of {len(tracks)} top tracks with a known key.")
+        else:
+            st.info("No key data available for your top tracks yet.")
 
 
 def render_playlists(
@@ -200,14 +258,52 @@ def render_playlists(
     column, ascending = SORT_OPTIONS[sort_label]
     df_sorted = df.sort_values(by=column, ascending=ascending, na_position="last").reset_index(drop=True)
 
-    display = df_sorted[["title", "artist", "bpm", "music_key", "time_sig", "danceability", "source"]].copy()
-    display.columns = ["Title", "Artist", "BPM", "Key", "Time sig", "Danceability", "Source"]
-    display.insert(0, "#", range(1, len(display) + 1))
-    st.dataframe(display, hide_index=True, use_container_width=True)
-    st.caption(
-        "Source: `getsongbpm` = BPM+key metadata · `deezer` = Deezer BPM metadata · "
-        "`analyzed` = estimated from the 30s preview (BPM/key are approximate)."
+    def _fmt_bpm(r) -> str:
+        if pd.isna(r["bpm"]):
+            return ""
+        # `~` marks an estimate from preview analysis (the least reliable source).
+        prefix = "~" if r["source"] == "analyzed" else ""
+        return f"{prefix}{r['bpm']:.0f}"
+
+    def _fmt_source(r) -> str:
+        if r["source"] == "analyzed":
+            return f"analyzed ({r.get('confidence') or '?'})"
+        return r["source"] or ""
+
+    display = pd.DataFrame(
+        {
+            "Title": df_sorted["title"],
+            "Artist": df_sorted["artist"],
+            "BPM": df_sorted.apply(_fmt_bpm, axis=1),
+            "Key": df_sorted["music_key"],
+            "Time sig": df_sorted["time_sig"],
+            "Danceability": df_sorted["danceability"],
+            "Source": df_sorted.apply(_fmt_source, axis=1),
+        }
     )
+    display.insert(0, "#", range(1, len(display) + 1))
+    st.dataframe(
+        display,
+        hide_index=True,
+        use_container_width=True,
+        height=_table_height(len(display)),  # 25 rows tall, then scroll within the table
+    )
+    st.caption(
+        "**`~`** marks an estimate from preview analysis — reliable for steady-beat "
+        "tracks but prone to octave (half/double) errors on slow or ambient songs; "
+        "the confidence in the Source column reflects this. "
+        "`getsongbpm` and `deezer` are exact metadata and always preferred."
+    )
+
+    # Camelot wheel — this playlist's harmonic fingerprint (below the track table).
+    key_counts = camelot.camelot_counts(df["music_key"].dropna().tolist())
+    if any(key_counts.values()):
+        st.markdown("#### 🎡 Key wheel")
+        mid = st.columns([1, 2, 1])[1]
+        with mid:
+            _show_wheel(key_counts)
+        n_keyed = int(df["music_key"].notna().sum())
+        st.caption(f"Harmonic map of {n_keyed} of {len(df)} tracks with a known key.")
 
     # Create a NEW sorted playlist (never modifies the original).
     st.divider()
@@ -247,7 +343,7 @@ def main() -> None:
     st.caption(f"Signed in as **{user.get('display_name') or user.get('id')}**")
     stats_tab, playlists_tab = st.tabs(["📊 Stats", "🎚️ Playlists"])
     with stats_tab:
-        render_stats(spotify)
+        render_stats(spotify, gsb, deezer)
     with playlists_tab:
         render_playlists(spotify, gsb, deezer)
 
