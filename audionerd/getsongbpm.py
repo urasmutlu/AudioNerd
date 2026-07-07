@@ -1,0 +1,109 @@
+"""Minimal GetSongBPM API client.
+
+Docs: https://getsongbpm.com/api
+
+We use the combined song+artist search, take the best match, and (when the
+search result is thin) fetch the song detail for danceability/acousticness.
+The caller is expected to cache results — GetSongBPM's free tier is rate
+limited, so we never want to look up the same track twice.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Optional
+
+import requests
+
+API_BASE = "https://api.getsongbpm.com"
+
+
+def _norm(s: str) -> str:
+    """Loose normalisation for comparing titles/artists across the two APIs."""
+    s = s.lower()
+    s = re.sub(r"\(.*?\)|\[.*?\]", " ", s)          # drop "(feat. …)", "[remix]"
+    s = re.sub(r"[^a-z0-9]+", " ", s)               # keep alnum only
+    return re.sub(r"\s+", " ", s).strip()
+
+
+class GetSongBPMClient:
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+        self._session = requests.Session()
+
+    def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        params = {"api_key": self._api_key, **params}
+        resp = self._session.get(f"{API_BASE}{path}", params=params, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+
+    def lookup(self, title: str, artist: str) -> Optional[dict[str, Any]]:
+        """Return a normalised feature dict for a track, or None if not found.
+
+        Keys: bpm, music_key, open_key, time_sig, danceability, acousticness,
+        getsongbpm_id.
+        """
+        lookup = f"song:{title} artist:{artist}"
+        try:
+            data = self._get("/search/", {"type": "both", "lookup": lookup})
+        except requests.HTTPError:
+            return None
+
+        results = data.get("search")
+        # GetSongBPM returns a dict like {"error": "no result"} when nothing matched.
+        if not isinstance(results, list) or not results:
+            return None
+
+        match = self._best_match(results, title, artist)
+        if match is None:
+            return None
+
+        features = {
+            "bpm": _to_float(match.get("tempo")),
+            "music_key": match.get("key_of"),
+            "open_key": match.get("open_key"),
+            "time_sig": match.get("time_sig"),
+            "danceability": _to_float(match.get("danceability")),
+            "acousticness": _to_float(match.get("acousticness")),
+            "getsongbpm_id": match.get("id"),
+        }
+
+        # Search results often omit danceability/acousticness; fill them from
+        # the song detail endpoint when we have an id and they're missing.
+        if match.get("id") and features["danceability"] is None:
+            detail = self._song_detail(match["id"])
+            if detail:
+                features["danceability"] = _to_float(detail.get("danceability"))
+                features["acousticness"] = _to_float(detail.get("acousticness"))
+                features["time_sig"] = features["time_sig"] or detail.get("time_sig")
+        return features
+
+    def _song_detail(self, song_id: str) -> Optional[dict[str, Any]]:
+        try:
+            data = self._get("/song/", {"id": song_id})
+        except requests.HTTPError:
+            return None
+        song = data.get("song")
+        return song if isinstance(song, dict) else None
+
+    @staticmethod
+    def _best_match(
+        results: list[dict[str, Any]], title: str, artist: str
+    ) -> Optional[dict[str, Any]]:
+        want_title, want_artist = _norm(title), _norm(artist)
+        # Prefer a result whose artist matches; fall back to first result.
+        for r in results:
+            r_artist = _norm((r.get("artist") or {}).get("name", ""))
+            if r_artist and (r_artist in want_artist or want_artist in r_artist):
+                return r
+        for r in results:
+            if _norm(r.get("title", "")) == want_title:
+                return r
+        return results[0]
+
+
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

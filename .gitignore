@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Spotify OAuth token cache (written by spotipy)
+.cache
+.cache-*
+
+# Local SQLite cache
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/

@@ -1,0 +1,11 @@
+[project]
+name = "audionerd"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=3.0.3",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "spotipy>=2.26.0",
+    "streamlit>=1.59.0",
+]
