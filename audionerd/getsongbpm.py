@@ -15,7 +15,11 @@ from typing import Any, Optional
 
 import requests
 
-API_BASE = "https://api.getsongbpm.com"
+# The public docs advertise api.getsongbpm.com, but that host sits behind a
+# Cloudflare "managed challenge" that returns an HTML 403 to any non-browser
+# client. The original api.getsong.co host serves the same JSON API without the
+# challenge, so we use it directly.
+API_BASE = "https://api.getsong.co"
 
 
 def _norm(s: str) -> str:
@@ -30,6 +34,12 @@ class GetSongBPMClient:
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
         self._session = requests.Session()
+        self._session.headers.update(
+            {
+                "User-Agent": "AudioNerd/0.1 (+https://github.com/urasmutlu/AudioNerd)",
+                "Accept": "application/json",
+            }
+        )
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         params = {"api_key": self._api_key, **params}
