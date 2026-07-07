@@ -61,6 +61,21 @@ uv run streamlit run app.py
 The first launch opens a browser tab to authorize AudioNerd against your Spotify
 account. After you approve, the token is cached locally (`.cache`) and reused.
 
+## Debug mode
+
+To troubleshoot API issues, run with `--debug` (note the `--`, which tells
+Streamlit to pass the flag through to the app):
+
+```bash
+uv run streamlit run app.py -- --debug
+```
+
+Or set the environment variable instead: `AUDIONERD_DEBUG=1`.
+
+In debug mode, any **non-OK** response from Spotify or GetSongBPM is logged to
+the terminal with its status code and body (API keys are redacted). The sidebar
+also shows a "Debug mode ON" banner.
+
 ## Project layout
 
 ```

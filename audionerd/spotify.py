@@ -14,11 +14,14 @@ fall back to `/tracks`, so this keeps working whichever your app enforces.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Iterator, Optional
 
 import requests
 from spotipy.oauth2 import SpotifyOAuth
+
+logger = logging.getLogger("audionerd.spotify")
 
 API_BASE = "https://api.spotify.com/v1"
 
@@ -40,7 +43,9 @@ class SpotifyClient:
         client_secret: str,
         redirect_uri: str,
         cache_path: str = ".cache",
+        debug: bool = False,
     ) -> None:
+        self._debug = debug
         self._auth = SpotifyOAuth(
             client_id=client_id,
             client_secret=client_secret,
@@ -76,6 +81,15 @@ class SpotifyClient:
                 wait = int(resp.headers.get("Retry-After", "1")) + 1
                 time.sleep(min(wait, 30))
                 continue
+            if not resp.ok and self._debug:
+                # Token lives in the Authorization header, so the URL is safe to log.
+                logger.warning(
+                    "Spotify %s %s -> HTTP %s\n%s",
+                    method,
+                    url,
+                    resp.status_code,
+                    resp.text[:1000],
+                )
             return resp
         return resp  # return the last response so the caller can raise
 

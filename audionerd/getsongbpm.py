@@ -10,10 +10,13 @@ limited, so we never want to look up the same track twice.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional
 
 import requests
+
+logger = logging.getLogger("audionerd.getsongbpm")
 
 # The public docs advertise api.getsongbpm.com, but that host sits behind a
 # Cloudflare "managed challenge" that returns an HTML 403 to any non-browser
@@ -31,8 +34,9 @@ def _norm(s: str) -> str:
 
 
 class GetSongBPMClient:
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, *, debug: bool = False) -> None:
         self._api_key = api_key
+        self._debug = debug
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -44,6 +48,15 @@ class GetSongBPMClient:
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         params = {"api_key": self._api_key, **params}
         resp = self._session.get(f"{API_BASE}{path}", params=params, timeout=15)
+        if not resp.ok and self._debug:
+            safe = {**params, "api_key": "***"}
+            logger.warning(
+                "GetSongBPM GET %s params=%s -> HTTP %s\n%s",
+                path,
+                safe,
+                resp.status_code,
+                resp.text[:1000],
+            )
         resp.raise_for_status()
         return resp.json()
 

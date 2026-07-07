@@ -6,6 +6,8 @@ Run with:  uv run streamlit run app.py
 
 from __future__ import annotations
 
+import argparse
+import logging
 import os
 
 import pandas as pd
@@ -17,6 +19,25 @@ from audionerd.getsongbpm import GetSongBPMClient
 from audionerd.spotify import TIME_RANGES, SpotifyClient
 
 load_dotenv()
+
+
+def _debug_enabled() -> bool:
+    """Debug mode via `streamlit run app.py -- --debug` or AUDIONERD_DEBUG=1."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--debug", action="store_true")
+    args, _ = parser.parse_known_args()
+    return args.debug or os.getenv("AUDIONERD_DEBUG") == "1"
+
+
+DEBUG = _debug_enabled()
+if DEBUG:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(name)s  %(levelname)s  %(message)s",
+    )
+    logging.getLogger("audionerd").setLevel(logging.DEBUG)
+    # Keep the noise down — we only want our own API error logging, not urllib3's.
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 st.set_page_config(page_title="AudioNerd", page_icon="🎧", layout="wide")
 
@@ -51,8 +72,9 @@ def get_clients() -> tuple[SpotifyClient, GetSongBPMClient]:
         client_id=os.environ["SPOTIFY_CLIENT_ID"],
         client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
         redirect_uri=os.environ["SPOTIFY_REDIRECT_URI"],
+        debug=DEBUG,
     )
-    gsb = GetSongBPMClient(os.environ["GETSONGBPM_API_KEY"])
+    gsb = GetSongBPMClient(os.environ["GETSONGBPM_API_KEY"], debug=DEBUG)
     return spotify, gsb
 
 
@@ -175,6 +197,8 @@ def render_playlists(spotify: SpotifyClient, gsb: GetSongBPMClient) -> None:
 
 def main() -> None:
     st.title("🎧 AudioNerd")
+    if DEBUG:
+        st.sidebar.warning("🐞 Debug mode ON — non-OK API responses are logged to the terminal.")
     spotify, gsb = get_clients()
 
     try:
